@@ -88,54 +88,52 @@ class xloaderPlugin(plugins.SingletonPlugin):
     # IDomainObjectModification
 
     def notify(self, entity, operation):
-        # type: (Package|Resource, DomainObjectOperation) -> None
+        """Handler for all Resource operations (create, update, delete).
+
+        Catches resources created via:
+        - Direct resource_create/update API calls
+        - Resources bundled in package_create
+        - Resources added in package_update
+        - Resource modifications
+
+        This runs before_commit to database.
         """
-        Runs before_commit to database for Packages and Resources.
-        We only want to check for changed Resources for this.
-        We want to check if values have changed, namely the url and the format.
-        See: ckan/model/modification.py.DomainObjectModificationExtension
-        """
-        if operation != DomainObjectOperation.changed \
-                or not isinstance(entity, Resource):
+        if not isinstance(entity, Resource):
             return
 
-        context = {
-            "ignore_auth": True,
-        }
-        resource_dict = toolkit.get_action("resource_show")(
-            context,
-            {
-                "id": entity.id,
-            },
-        )
+        # Handle resource deletion
+        if operation == DomainObjectOperation.deleted:
+            log.debug("Resource %s deleted, skipping xloader", entity.id)
+            return
 
-        if _should_remove_unsupported_resource_from_datastore(resource_dict):
-            toolkit.enqueue_job(fn=_remove_unsupported_resource_from_datastore, args=[entity.id])
+        context = {"ignore_auth": True}
+        resource_dict = toolkit.get_action("resource_show")(context, {"id": entity.id})
 
         if utils.requires_successful_validation_report():
-            # If the resource requires validation, stop here if validation
-            # has not been performed or did not succeed. The Validation
-            # extension will call resource_patch and this method should
-            # be called again. However, url_changed will not be in the entity
-            # once Validation does the patch.
             log.debug("Deferring xloading resource %s because the "
-                      "resource did not pass validation yet.", resource_dict.get('id'))
+                        "resource did not pass validation yet.", resource_dict.get('id'))
             return
-        elif not getattr(entity, 'url_changed', False):
-            # do not submit to xloader if the url has not changed.
-            return
+
+        # Handle resource creation (new resources from any source)
+        if operation == DomainObjectOperation.new:
+            log.debug("New resource %s detected, submitting to xloader", entity.id)
+
+        # Handle resource updates
+        elif operation == DomainObjectOperation.changed:
+            # Clean up datastore for unsupported formats
+            if _should_remove_unsupported_resource_from_datastore(resource_dict):
+                toolkit.enqueue_job(fn=_remove_unsupported_resource_from_datastore, args=[entity.id])
+
+            # Only submit if URL has changed
+            if not getattr(entity, 'url_changed', False):
+                log.debug("Resource %s changed but URL unchanged, skipping xloader", entity.id)
+                return
+
+            log.debug("Resource %s URL changed, submitting to xloader", entity.id)
 
         self._submit_to_xloader(resource_dict)
 
     # IResourceController
-
-    def after_resource_create(self, context, resource_dict):
-        if utils.requires_successful_validation_report():
-            log.debug("Deferring xloading resource %s because the "
-                      "resource did not pass validation yet.", resource_dict.get('id'))
-            return
-
-        self._submit_to_xloader(resource_dict)
 
     def before_resource_show(self, resource_dict):
         resource_dict[
@@ -167,9 +165,6 @@ class xloaderPlugin(plugins.SingletonPlugin):
                  'datastore_active': datastore_exists})
 
     if not toolkit.check_ckan_version("2.10"):
-
-        def after_create(self, context, resource_dict):
-            self.after_resource_create(context, resource_dict)
 
         def before_show(self, resource_dict):
             self.before_resource_show(resource_dict)
