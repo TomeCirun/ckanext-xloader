@@ -126,7 +126,7 @@ class xloaderPlugin(plugins.SingletonPlugin):
 
             # Only submit if URL has changed
             if not getattr(entity, 'url_changed', False):
-                sync_datastore_flag(resource_dict["id"])
+                sync_datastore_flag(resource_dict)
                 log.debug("Resource %s changed but URL unchanged, skipping xloader", entity.id)
                 return
 
