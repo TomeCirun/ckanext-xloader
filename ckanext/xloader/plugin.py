@@ -126,6 +126,7 @@ class xloaderPlugin(plugins.SingletonPlugin):
 
             # Only submit if URL has changed
             if not getattr(entity, 'url_changed', False):
+                sync_datastore_flag(resource_dict["id"])
                 log.debug("Resource %s changed but URL unchanged, skipping xloader", entity.id)
                 return
 
@@ -142,35 +143,10 @@ class xloaderPlugin(plugins.SingletonPlugin):
             resource_dict.get("datastore_contains_all_records_of_source_file")
         )
 
-    def after_resource_update(self, context, resource_dict):
-        """ Check whether the datastore is out of sync with the
-        'datastore_active' flag. This can occur due to race conditions
-        like https://github.com/ckan/ckan/issues/4663
-        """
-        datastore_active = resource_dict.get('datastore_active', False)
-        try:
-            context = {'ignore_auth': True}
-            if toolkit.get_action('datastore_info')(
-                    context=context, data_dict={'id': resource_dict['id']}):
-                datastore_exists = True
-            else:
-                datastore_exists = False
-        except toolkit.ObjectNotFound:
-            datastore_exists = False
-
-        if datastore_active != datastore_exists:
-            # flag is out of sync with datastore; update it
-            utils.set_resource_metadata(
-                {'resource_id': resource_dict['id'],
-                 'datastore_active': datastore_exists})
-
     if not toolkit.check_ckan_version("2.10"):
 
         def before_show(self, resource_dict):
             self.before_resource_show(resource_dict)
-
-        def after_update(self, context, resource_dict):
-            self.after_resource_update(context, resource_dict)
 
     def _submit_to_xloader(self, resource_dict, sync=False):
         context = {"ignore_auth": True, "defer_commit": True}
@@ -293,3 +269,31 @@ def _remove_unsupported_resource_from_datastore(resource_id):
             log.info('Datastore table dropped for resource %s', res['id'])
         except toolkit.ObjectNotFound:
             log.error('Datastore table for resource %s does not exist', res['id'])
+
+
+def sync_datastore_flag(resource_dict):
+    """ Check whether the datastore is out of sync with the
+    'datastore_active' flag. This can occur due to race conditions
+    like https://github.com/ckan/ckan/issues/4663
+    """
+    datastore_active = resource_dict.get('datastore_active', False)
+    try:
+        datastore_info = toolkit.get_action('datastore_info')(
+            context={"ignore_auth": True},
+            data_dict={'id': resource_dict['id']}
+        )
+        datastore_exists = bool(datastore_info)
+    except toolkit.ObjectNotFound:
+        datastore_exists = False
+
+    if datastore_active != datastore_exists:
+        # Flag is out of sync; update metadata
+        utils.set_resource_metadata({
+            'resource_id': resource_dict['id'],
+            'datastore_active': datastore_exists
+        })
+        log.debug(
+            "Resource %s: datastore_active flag synced to %s",
+            resource_dict['id'],
+            datastore_exists
+        )
